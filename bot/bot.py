@@ -36,6 +36,22 @@ bot = Bot(token = TOKEN) # создаем объект бота
 dp = Dispatcher(storage=MemoryStorage())
 API = "http://127.0.0.1:8000" # Адрес API - локальный сервер на собственном компе
 
+
+# Функция проверяет, в каких зарегистрированных группах состоит пользователь
+async def filter_user_chats(chats: list, user_id: int):
+    available_chats = [] # группы, куда пользователь имеет доступ
+    for chat in chats:
+        try:
+            member = await bot.get_chat_member(chat_id=chat["chat_id"], user_id=user_id) # запрашиваем статус пользователя в каждой группе
+            if member.status in ["member", "administrator", "creator"]: # если пользователь - участник, админ или создатель
+                available_chats.append(chat) # добавляем чат к списку возможных
+        
+        except Exception: # если ТГ вернул ошибку: пользователь не состоит в группе / бот был удален из групп / у бота нет доступа - такую группу не показываем
+            pass
+
+    return available_chats
+
+
 # Регистрация группы
 @dp.message(F.text== "/register")
 async def register_chat(message: Message):
@@ -57,11 +73,14 @@ async def cancel(message: Message, state: FSMContext):
 @dp.message(F.text== "/start")
 async def start(message: Message, state: FSMContext):
     # получам список чатов пользователя
-    chats = requests.get(f"{API}/chats").json()
+    all_chats = requests.get(f"{API}/chats").json() # все группы, где есть бот
+    chats = await filter_user_chats(chats=all_chats, user_id=message.from_user.id) # фильтр все группы, где есть бот и состоит пользователь
     if not chats:
-        await message.answer("Нет зарегистрированных групп")
+        await message.answer(
+            "Нет зарегистрированных групп.\n\n"
+            "Добавьте бота в группу и напишите там /register")
         return
-    await message.answer("Выберите чат:", reply_markup=chats_keyboard(chats))
+    await message.answer("Выберите чат:", reply_markup=chats_keyboard(chats)) # показываем только доступные группы
     await state.set_state(Form.choosing_chat) # переход на следующий этап
 
 # Отправка нового сообщения после завершения операций с прошлым
@@ -69,7 +88,13 @@ async def start(message: Message, state: FSMContext):
 async def new_message(message: Message, state: FSMContext):
     # очистка состояния
     await state.clear()
-    chats = requests.get(f"{API}/chats").json()
+    all_chats = requests.get(f"{API}/chats").json()
+    chats = await filter_user_chats(chats=all_chats, user_id=message.from_user.id)
+    if not chats:
+        await message.answer(
+            "Нет зарегистрированных групп.\n\n"
+            "Добавьте бота в группу и напишите там /register")
+        return
     await message.answer("Выберите чат:", reply_markup=chats_keyboard(chats))
     await state.set_state(Form.choosing_chat) # переход на следующий этап
 
@@ -199,6 +224,20 @@ async def send(message: Message, state: FSMContext):
         #проверка существования чата
         if not chat:
             await message.answer("Чат не найден!")
+            await state.clear()
+            return
+        
+        try:
+            member = await bot.get_chat_member(chat_id=chat["chat_id"], user_id=message.from_user.id) 
+            if member.status not in ["member", "administrator", "creator"]:
+                await message.answer("Вы не состоите в этой группе, поэтому не можете отправить туда сообщение")
+                await state.clear()
+                return
+        
+        except Exception: 
+            await message.answer(
+                "Не удалось проверить Ваше участие в группе.\n"
+                "Возможно, бот был удален из группы или у него нет доступа.")
             await state.clear()
             return
 
